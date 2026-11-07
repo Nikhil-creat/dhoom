@@ -1,0 +1,19 @@
+# One-command local stack:  docker compose up --build
+services:
+  api:
+    build: ./server
+    ports: ["8080:8080"]
+    environment:
+      JWT_SECRET: ${JWT_SECRET:-change-me}
+      CLIENT_ORIGIN: http://localhost:3000
+      JAMENDO_CLIENT_ID: ${JAMENDO_CLIENT_ID:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+    volumes: ["dhoom-data:/data"]
+  web:
+    build:
+      context: ./client
+      args: { VITE_API_URL: http://localhost:8080 }
+    ports: ["3000:80"]
+    depends_on: [api]
+volumes:
+  dhoom-data:

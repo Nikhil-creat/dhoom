@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: dhoom-api
+    runtime: node
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    plan: free
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CLIENT_ORIGIN
+        sync: false   # your Vercel/Netlify URLs, comma separated
+      - key: JAMENDO_CLIENT_ID
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false

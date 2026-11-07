@@ -1,0 +1,7 @@
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import App from './App.jsx';
+import { PlayerProvider } from './player.jsx';
+import './styles.css';
+if ('serviceWorker' in navigator && import.meta.env.PROD) navigator.serviceWorker.register('/sw.js').catch(() => {});
+createRoot(document.getElementById('root')).render(<PlayerProvider><App /></PlayerProvider>);
