@@ -1,4 +1,5 @@
-# One-command local stack:  docker compose up --build
+# docker compose up --build                      -> web :3000, api :8080
+# docker compose --profile ml up --build         -> + CNN service :8000 (set ML_SERVICE_URL=http://ml:8000)
 services:
   api:
     build: ./server
@@ -8,6 +9,7 @@ services:
       CLIENT_ORIGIN: http://localhost:3000
       JAMENDO_CLIENT_ID: ${JAMENDO_CLIENT_ID:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
+      ML_SERVICE_URL: ${ML_SERVICE_URL:-}
     volumes: ["dhoom-data:/data"]
   web:
     build:
@@ -15,5 +17,10 @@ services:
       args: { VITE_API_URL: http://localhost:8080 }
     ports: ["3000:80"]
     depends_on: [api]
+  ml:
+    profiles: ["ml"]
+    build: ./ml
+    ports: ["8000:8000"]
+    volumes: ["./ml:/app"]
 volumes:
   dhoom-data:

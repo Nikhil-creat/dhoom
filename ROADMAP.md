@@ -2,8 +2,8 @@
 
 | Area | Status | Next step |
 |---|---|---|
-| Database | JSON file (single instance) | Supabase/Neon Postgres: users, tracks, playlists, history tables |
-| File storage | Local disk (ephemeral on Render free) | Supabase Storage / Cloudflare R2 + signed URLs, CDN |
+| Database | In-memory JSON snapshotted to Supabase (`dhoom_state`) — persistent, single instance | Supabase/Neon Postgres: users, tracks, playlists, history tables |
+| File storage | Supabase Storage bucket via proxy (local disk if Supabase not configured) | Supabase Storage / Cloudflare R2 + signed URLs, CDN |
 | Streaming | Progressive MP3 + Range | HLS/DASH adaptive bitrate via ffmpeg transcoding job |
 | Catalog rights | Demo + Jamendo CC + own uploads | Artist onboarding + licence agreements / distributor (DistroKid/TuneCore style) or a licensed API |
 | Recommendations | Genre/artist affinity | Audio embeddings + vector DB (Qdrant/pgvector), collaborative filtering |

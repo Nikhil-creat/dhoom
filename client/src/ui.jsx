@@ -144,7 +144,7 @@ export function UploadCard({ genres, onDone }) {
   const go = async () => {
     const fd = new FormData(); Object.entries(f).forEach(([k, v]) => fd.append(k, v));
     Object.entries(files).forEach(([k, v]) => v && fd.append(k, v));
-    try { await api('/api/tracks', { method: 'POST', body: fd }); setMsg('Uploaded ✓'); onDone(); } catch (e) { setMsg(e.message); }
+    try { const tr = await api('/api/tracks', { method: 'POST', body: fd }); setMsg('Uploaded ✓' + (tr.autoGenre ? ` · CNN genre guess: ${tr.autoGenre}` : '')); onDone(); } catch (e) { setMsg(e.message); }
   };
   const fi = (k, label, accept) => <label className="fl">{label}<input type="file" accept={accept} onChange={(e) => setFiles({ ...files, [k]: e.target.files[0] })} /></label>;
   return (

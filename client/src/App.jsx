@@ -3,6 +3,7 @@ import { api, setToken, WS_URL, abs } from './api';
 import { T } from './i18n';
 import { usePlayer } from './player.jsx';
 import { AuthCard, Cover, Lyrics, QueuePanel, Studio, TrackRow, UploadCard, Visualizer, fmt, hue } from './ui.jsx';
+import { AdminReports, ApiBanner, AssistantView, Footer, Header, Hero, Pages, Skeleton } from './views.jsx';
 
 const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
 
@@ -87,9 +88,9 @@ function Admin({ refresh, tracks }) {
   const del = async (id) => { if (confirm('Delete track?')) { await api('/api/tracks/' + id, { method: 'DELETE' }); refresh(); load(); } };
   return (
     <div><h2>🛡 Admin</h2>
-      <div className="stats">{[['Users', s.users], ['Tracks', s.tracks], ['Playlists', s.playlists], ['Plays', s.totalPlays], ['Live rooms', s.rooms]].map(([k, v]) => <div key={k} className="card stat"><b>{v}</b><small>{k}</small></div>)}</div>
+      <div className="stats">{[['Users', s.users], ['Tracks', s.tracks], ['Playlists', s.playlists], ['Plays', s.totalPlays], ['Live rooms', s.rooms], ['Open reports', s.reports]].map(([k, v]) => <div key={k} className="card stat"><b>{v}</b><small>{k}</small></div>)}</div>
       <Bars title="Top tracks" data={s.topTracks.map((x) => ({ name: x.title, plays: x.plays }))} />
-      <h3>Manage tracks</h3>{tracks.map((x) => <div key={x.id} className="row"><div className="meta"><b>{x.title}</b><small>{x.artist} · {x.genre}</small></div><button onClick={() => del(x.id)}>Delete</button></div>)}
+      <AdminReports /><h3>Manage tracks</h3>{tracks.map((x) => <div key={x.id} className="row"><div className="meta"><b>{x.title}</b><small>{x.artist} · {x.genre}</small></div><button onClick={() => del(x.id)}>Delete</button></div>)}
     </div>
   );
 }
@@ -134,10 +135,12 @@ export default function App() {
   const [q, setQ] = useState(''); const [liked, setLiked] = useState([]); const [pls, setPls] = useState([]); const [open, setOpen] = useState(null); const [recent, setRecent] = useState([]);
   const [showAuth, setShowAuth] = useState(false); const [np, setNp] = useState(false); const [pal, setPal] = useState(false); const [listening, setListening] = useState(false);
   const party = useParty(p, user);
+  const [apiOk, setApiOk] = useState(null); const [loading, setLoading] = useState(true); const [tick, setTick] = useState(0);
+  useEffect(() => { setApiOk(null); api('/api/health').then(() => { setApiOk(true); setGenre((g) => g); loadTracks(); loadRec(); }).catch(() => setApiOk(false)); }, [tick]);
 
   const loadLib = () => user && Promise.all([api('/api/likes'), api('/api/playlists'), api('/api/history')]).then(([l, pl, h]) => { setLiked(l); setPls(pl); setRecent(h); }).catch(() => { setToken(null); setUser(null); });
   const loadTracks = () => api(`/api/tracks?genre=${encodeURIComponent(genre)}&q=${encodeURIComponent(q)}`).then(setTracks).catch(() => {});
-  const loadRec = () => api('/api/recommend').then(setRec).catch(() => {});
+  const loadRec = () => api('/api/recommend').then(setRec).catch(() => {}).finally(() => setLoading(false));
   useEffect(() => { api('/api/genres').then(setGenres).catch(() => {}); }, []);
   useEffect(() => { loadTracks(); }, [genre, q]);
   useEffect(() => { api(`/api/discover?q=${encodeURIComponent(q)}&tags=${encodeURIComponent(genre && !genre.startsWith('Telugu') ? genre.toLowerCase() : '')}`).then(setDisc).catch(() => {}); }, [genre, q]);
@@ -177,6 +180,8 @@ export default function App() {
   const rmFrom = async (x) => { await api(`/api/playlists/${open}/tracks/${x.id}`, { method: 'DELETE' }); loadLib(); };
   const share = async (pl) => { await api('/api/playlists/' + pl.id, { method: 'PATCH', body: { public: true } }); const url = `${location.origin}/#pl=${pl.id}`; navigator.clipboard?.writeText(url); alert('Public link copied:\n' + url); loadLib(); };
   const logout = () => { setToken(null); setUser(null); setLiked([]); setPls([]); setRecent([]); };
+  const exportData = async () => { const d = await api('/api/me/export'); const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' })); a.download = 'dhoom-my-data.json'; a.click(); };
+  const deleteAccount = async () => { if (!confirm('Permanently delete your account, playlists, likes and uploads?')) return; try { await api('/api/me', { method: 'DELETE' }); logout(); alert('Account deleted.'); } catch (e) { alert(e.message); } };
   const go = (k) => { if (['library', 'upload', 'stats', 'ai'].includes(k) && !user && k !== 'ai') setShowAuth(true); setView(k); };
   const shared = { user, playlists: pls, onLike: like, onAdd: addTo };
   const list = (arr) => arr.map((x, i) => <TrackRow key={x.id} t={x} list={arr} i={i} liked={isLiked(x)} {...shared} />);
@@ -186,7 +191,7 @@ export default function App() {
   const [pubPl, setPubPl] = useState(null);
   useEffect(() => { const m = location.hash.match(/pl=(\w+)/); if (m) api('/api/public/playlists/' + m[1]).then((d) => { setPubPl(d); setView('public'); }).catch(() => {}); }, []);
 
-  const nav = [['home', '🏠', t('home')], ['search', '🔎', t('search')], ['library', '📚', t('library')], ['ai', '🤖', t('ai')], ['party', '🛰', t('party')], ['studio', '🎛', t('studio')], ['stats', '📈', t('stats')], ['upload', '⬆', t('upload')], ...(user?.role === 'admin' ? [['admin', '🛡', t('admin')]] : []), ['settings', '⚙', t('settings')]];
+  const nav = [['home', '🏠', t('home')], ['search', '🔎', t('search')], ['library', '📚', t('library')], ['ai', '🤖', t('ai')], ['assistant', '🧠', 'Assistant'], ['party', '🛰', t('party')], ['studio', '🎛', t('studio')], ['stats', '📈', t('stats')], ['upload', '⬆', t('upload')], ...(user?.role === 'admin' ? [['admin', '🛡', t('admin')]] : []), ['settings', '⚙', t('settings')]];
 
   return (
     <div className={'app' + (p.track ? ' hasp' : '') + (np ? ' np-open' : '')}>
@@ -199,14 +204,17 @@ export default function App() {
       </aside>
 
       <main>
+        <Header q={q} setQ={setQ} onSubmit={() => setView('search')} voice={voice} listening={listening} lang={lang} setLang={setLang} user={user} onLogin={() => setShowAuth(true)} onLogout={logout} apiOk={apiOk} />
+        <ApiBanner apiOk={apiOk} retry={() => setTick((x) => x + 1)} />
         {showAuth && !user && <AuthCard onDone={(u) => { setUser(u); setShowAuth(false); }} />}
         {party.on && view !== 'party' && <div className="banner" onClick={() => setView('party')}>🛰 Room {party.room} · {party.members.length} listening {party.host ? '(you are host)' : '(following host)'}</div>}
 
         {view === 'home' && (<>
+          <Hero count={tracks.length} onPlay={() => { const l = tracks.filter((x) => x.genre === 'Telugu Folk DJ'); p.play(l.length ? l : tracks, 0); }} onAI={() => setView('ai')} onAgent={() => setView('assistant')} />
           <div className="chips"><button className={!genre ? 'on' : ''} onClick={() => setGenre('')}>All</button>{genres.map((g) => <button key={g} className={genre === g ? 'on' : ''} onClick={() => setGenre(g)}>{g}</button>)}</div>
           {genre ? (<><h2>{genre}</h2>{tracks.length ? list(tracks) : <small>No tracks in this genre yet — upload some!</small>}</>) : (<>
             {user && recent.length > 0 && (<><h2>{t('recent')}</h2><div className="hs">{recent.slice(0, 10).map((x, i) => <div key={x.id} className="tile" onClick={() => p.play(recent, i)}><Cover t={x} size={120} /><b>{x.title}</b><small>{x.artist}</small></div>)}</div></>)}
-            <h2>{t('forYou')}</h2><div className="hs">{rec.forYou.map((x, i) => <div key={x.id} className="tile" onClick={() => p.play(rec.forYou, i)}><Cover t={x} size={120} /><b>{x.title}</b><small>{x.artist}</small></div>)}</div>
+            <h2>{t('forYou')}</h2>{loading && <Skeleton />}<div className="hs">{rec.forYou.map((x, i) => <div key={x.id} className="tile" onClick={() => p.play(rec.forYou, i)}><Cover t={x} size={120} /><b>{x.title}</b><small>{x.artist}</small></div>)}</div>
             <h2>{t('mixes')}</h2>{rec.mixes.map((m) => <div key={m.name} className="card mix"><b>{m.name}</b><button className="primary" onClick={() => p.play(m.tracks, 0)}>▶ Play</button></div>)}
             <h2>{t('trending')}</h2>{list(rec.trending)}
             <h2>{t('discover')} <small>(Creative Commons)</small></h2>{disc.tracks.length ? list(disc.tracks) : <small>{disc.note || 'Nothing found.'}</small>}
@@ -230,6 +238,8 @@ export default function App() {
 
         {view === 'public' && pubPl && (<><h2>🔗 {pubPl.name} <small>by {pubPl.owner}</small></h2><button className="primary" onClick={() => p.play(pubPl.tracks, 0)}>▶ Play all</button>{list(pubPl.tracks)}</>)}
         {view === 'ai' && <AIDJ list={list} user={user} onSaved={loadLib} t={t} />}
+        {view === 'assistant' && <AssistantView p={p} onChanged={loadLib} />}
+        {['about', 'privacy', 'terms', 'dmca', 'security'].includes(view) && <Pages page={view} />}
         {view === 'party' && <PartyView party={party} t={t} />}
         {view === 'studio' && <Studio />}
         {view === 'stats' && user && <Insights />}
@@ -240,9 +250,11 @@ export default function App() {
             <div className="chips"><span>Language</span><button className={lang === 'en' ? 'on' : ''} onClick={() => setLang('en')}>English</button><button className={lang === 'te' ? 'on' : ''} onClick={() => setLang('te')}>తెలుగు</button></div>
             <div className="chips"><span>Theme</span>{['neon', 'amoled', 'light'].map((m) => <button key={m} className={theme.mode === m ? 'on' : ''} onClick={() => setTheme({ ...theme, mode: m })}>{m}</button>)}</div>
             <div className="chips"><span>Accent</span>{['#ff3d81', '#7c4dff', '#00d4ff', '#22e58b', '#ffb020'].map((c) => <button key={c} style={{ background: c, width: 30, height: 30, padding: 0 }} onClick={() => setTheme({ ...theme, accent: c })} />)}</div>
+            <div className="chips">{user && <><button onClick={exportData}>⬇ Download my data</button><button onClick={deleteAccount}>🗑 Delete my account</button></>}</div>
             <small>Shortcuts: Space play/pause · ←/→ seek 10s · Shift+←/→ prev/next · ↑/↓ volume · L lyrics · Ctrl/⌘+K command palette</small>
           </div>
         )}
+        <Footer go={go} />
       </main>
 
       {p.track && np && <NowPlaying t={t} onClose={() => setNp(false)} />}

@@ -12,6 +12,7 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { Readable } from 'stream';
 import { WebSocketServer } from 'ws';
+import { registerAI } from './ai.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 8080;
@@ -22,13 +23,43 @@ const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-/* ============ tiny JSON database (swap for Postgres/Supabase later — see ROADMAP.md) ============ */
+/* ============ persistence: local JSON + (optional) Supabase snapshot & Storage ============ */
 const DB_FILE = path.join(DATA_DIR, 'db.json');
-const db = fs.existsSync(DB_FILE) ? JSON.parse(fs.readFileSync(DB_FILE, 'utf8')) : {};
+const SB_URL = (process.env.SUPABASE_URL || '').replace(/\/$/, '');
+const SB_KEY = process.env.SUPABASE_SERVICE_KEY || '';
+const SB_BUCKET = process.env.SUPABASE_BUCKET || 'dhoom';
+const sb = SB_URL && SB_KEY ? true : false;
+const sbHeaders = (extra = {}) => ({ apikey: SB_KEY, ...(SB_KEY.startsWith('eyJ') ? { Authorization: 'Bearer ' + SB_KEY } : {}), ...extra });
+const sbRest = (p, o = {}) => fetch(`${SB_URL}/rest/v1/${p}`, { ...o, headers: sbHeaders({ 'Content-Type': 'application/json', ...o.headers }), signal: AbortSignal.timeout(15000) });
+async function loadState() {
+  if (sb) {
+    for (let i = 1; i <= 4; i++) {
+      try {
+        const r = await sbRest('dhoom_state?id=eq.main&select=data'); const j = await r.json();
+        if (r.ok) { console.log(j[0]?.data ? '✅ Loaded state from Supabase' : 'ℹ️ Supabase connected, no saved state yet (fresh start)'); return j[0]?.data || {}; }
+        console.error(`Supabase load failed (${r.status}):`, JSON.stringify(j).slice(0, 200), '— did you run supabase.sql?');
+      } catch (e) { console.error('Supabase load error:', e.message); }
+      await new Promise((r) => setTimeout(r, 2000 * i));
+    }
+    console.error('❌ Refusing to start: cannot read Supabase (would risk overwriting your data). Check SUPABASE_URL / SUPABASE_SERVICE_KEY.'); process.exit(1);
+  }
+  return fs.existsSync(DB_FILE) ? JSON.parse(fs.readFileSync(DB_FILE, 'utf8')) : {};
+}
+const db = await loadState();
 Object.assign(db, { users: [], tracks: [], ext: {}, playlists: [], likes: {}, history: {}, ...db });
 let timer;
-const flush = () => fs.writeFileSync(DB_FILE, JSON.stringify(db));
-const save = () => { clearTimeout(timer); timer = setTimeout(flush, 200); };
+const flush = async () => {
+  try { fs.writeFileSync(DB_FILE, JSON.stringify(db)); } catch {}
+  if (sb) { try { const r = await sbRest('dhoom_state', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify({ id: 'main', data: db, updated_at: new Date().toISOString() }) }); if (!r.ok) console.error('Supabase save failed', r.status, (await r.text()).slice(0, 200)); } catch (e) { console.error('Supabase save error:', e.message); } }
+};
+const save = () => { clearTimeout(timer); timer = setTimeout(flush, sb ? 800 : 200); };
+async function sbUpload(file, name, mime) {
+  const r = await fetch(`${SB_URL}/storage/v1/object/${SB_BUCKET}/${name}`, { method: 'POST', headers: sbHeaders({ 'Content-Type': mime || 'application/octet-stream', 'x-upsert': 'true' }), body: fs.readFileSync(file), signal: AbortSignal.timeout(60000) });
+  if (!r.ok) throw new Error('storage ' + r.status + ' ' + (await r.text()).slice(0, 120));
+  return `${SB_URL}/storage/v1/object/public/${SB_BUCKET}/${name}`;
+}
+const sbKey = (u) => { try { const raw = String(u).startsWith('/api/proxy') ? new URL(u, 'http://x').searchParams.get('u') : u; const m = String(raw).match(/\/object\/public\/[^/]+\/(.+)$/); return m ? decodeURIComponent(m[1]) : null; } catch { return null; } };
+const sbDelete = (key) => sb && key && fetch(`${SB_URL}/storage/v1/object/${SB_BUCKET}/${key}`, { method: 'DELETE', headers: sbHeaders() }).catch(() => {});
 const uid = () => crypto.randomBytes(6).toString('hex');
 const shuffle = (a) => [...a].sort(() => Math.random() - 0.5);
 
@@ -52,7 +83,9 @@ const app = express();
 app.set('trust proxy', 1);
 const origins = (process.env.CLIENT_ORIGIN || '*').split(',').map((s) => s.trim());
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } })); // cross-origin so audio/images load on Vercel/Netlify
-app.use(cors({ origin: origins.includes('*') ? true : origins }));
+// CLIENT_ORIGIN supports exact URLs and wildcards, e.g. https://dhoom-*.vercel.app
+const okOrigin = (o) => !o || origins.includes('*') || origins.some((p) => p === o || (p.includes('*') && new RegExp('^' + p.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^.]+') + '$').test(o)));
+app.use(cors({ origin: (o, cb) => cb(null, okOrigin(o)) }));
 app.use(express.json({ limit: '1mb' }));
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, limit: 600, standardHeaders: true, legacyHeaders: false }));
 const authLimit = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, message: { error: 'Too many attempts, try later' } });
@@ -67,7 +100,7 @@ const pub = (u) => ({ id: u.id, name: u.name, role: u.role });
 const findTrack = (id) => db.tracks.find((t) => t.id === id) || db.ext[id];
 const stash = (t) => { if (t?.id && !findTrack(t.id)) db.ext[t.id] = { id: t.id, title: String(t.title).slice(0, 200), artist: String(t.artist || '').slice(0, 200), album: t.album || '', genre: t.genre || '', cover: t.cover || '', url: t.url, source: t.source || 'ext' }; };
 
-app.get('/api/health', (_, res) => res.json({ ok: true, uptime: Math.round(process.uptime()), version: '2.0.0' }));
+app.get('/api/health', (_, res) => res.json({ ok: true, uptime: Math.round(process.uptime()), version: '3.1.0', storage: sb ? 'supabase' : 'local' }));
 app.get('/api/genres', (_, res) => res.json(GENRES));
 
 /* ============ auth (first registered user becomes admin) ============ */
@@ -94,20 +127,50 @@ app.get('/api/tracks', (req, res) => {
 });
 app.post('/api/tracks/:id/play', (req, res) => { const t = db.tracks.find((x) => x.id === req.params.id); if (t) { t.plays = (t.plays || 0) + 1; save(); } res.json({ ok: true }); });
 
+/* magic-byte sniffing: don't trust client-supplied mimetypes */
+const sniff = (file, kind) => {
+  try {
+    const fd = fs.openSync(file, 'r'); const b = Buffer.alloc(12); fs.readSync(fd, b, 0, 12, 0); fs.closeSync(fd);
+    const s4 = b.toString('latin1', 0, 4);
+    if (kind === 'audio') return b.toString('latin1', 0, 3) === 'ID3' || (b[0] === 0xff && (b[1] & 0xe0) === 0xe0) || b.toString('latin1', 4, 8) === 'ftyp' || s4 === 'RIFF' || s4 === 'OggS' || s4 === 'fLaC';
+    return (b[0] === 0x89 && b.toString('latin1', 1, 4) === 'PNG') || (b[0] === 0xff && b[1] === 0xd8) || (s4 === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP');
+  } catch { return false; }
+};
+/* optional CNN genre service (see /ml) */
+async function mlClassify(file, name) {
+  const url = process.env.ML_SERVICE_URL; if (!url) return null;
+  try {
+    const fd = new FormData(); fd.append('file', new Blob([fs.readFileSync(file)]), name);
+    const r = await fetch(url.replace(/\/$/, '') + '/classify', { method: 'POST', body: fd, signal: AbortSignal.timeout(20000) });
+    return r.ok ? (await r.json()).top : null;
+  } catch { return null; }
+}
+
 const upload = multer({
   storage: multer.diskStorage({ destination: UPLOAD_DIR, filename: (_, f, cb) => cb(null, uid() + path.extname(f.originalname).toLowerCase()) }),
   limits: { fileSize: 30 * 1024 * 1024 },
   fileFilter: (_, f, cb) => cb(null, f.fieldname === 'audio' ? f.mimetype.startsWith('audio/') : f.fieldname === 'cover' ? f.mimetype.startsWith('image/') : /\.(lrc|txt)$/i.test(f.originalname)),
 });
-app.post('/api/tracks', auth, upload.fields([{ name: 'audio', maxCount: 1 }, { name: 'cover', maxCount: 1 }, { name: 'lrc', maxCount: 1 }]), (req, res) => {
+app.post('/api/tracks', auth, upload.fields([{ name: 'audio', maxCount: 1 }, { name: 'cover', maxCount: 1 }, { name: 'lrc', maxCount: 1 }]), async (req, res) => {
   const f = req.files || {}; const audio = f.audio?.[0];
   if (!audio) return res.status(400).json({ error: 'Attach an audio file (mp3/m4a/wav/ogg, max 30MB)' });
+  if (!sniff(audio.path, 'audio')) { Object.values(f).flat().forEach((x) => fs.rm(x.path, () => {})); return res.status(400).json({ error: 'File does not look like valid audio' }); }
+  if (f.cover?.[0] && !sniff(f.cover[0].path, 'image')) { fs.rm(f.cover[0].path, () => {}); delete f.cover; }
   const b = req.body; let lyrics = '';
   if (f.lrc?.[0]) { lyrics = fs.readFileSync(f.lrc[0].path, 'utf8').slice(0, 60000); fs.rm(f.lrc[0].path, () => {}); }
   const t = { id: uid(), title: b.title || audio.originalname, artist: b.artist || 'Unknown', album: b.album || 'Singles', genre: GENRES.includes(b.genre) ? b.genre : 'Telugu Folk DJ', language: b.language || 'Telugu', cover: f.cover?.[0] ? '/uploads/' + f.cover[0].filename : '', url: '/uploads/' + audio.filename, source: 'upload', by: req.user.id, lyrics, plays: 0, created: Date.now() };
+  const top = await mlClassify(audio.path, audio.originalname);
+  if (top?.length) { t.autoGenre = top[0].label; t.autoScores = top; }
+  if (sb) {
+    try {
+      t.url = `/api/proxy?u=${encodeURIComponent(await sbUpload(audio.path, audio.filename, audio.mimetype))}`;
+      if (f.cover?.[0]) t.cover = await sbUpload(f.cover[0].path, f.cover[0].filename, f.cover[0].mimetype);
+    } catch (e) { console.error('[storage]', e.message); Object.values(f).flat().forEach((x) => fs.rm(x.path, () => {})); return res.status(502).json({ error: 'Cloud storage upload failed — check Supabase bucket settings' }); }
+    Object.values(f).flat().forEach((x) => fs.rm(x.path, () => {}));
+  }
   db.tracks.unshift(t); save(); const { lyrics: _l, ...out } = t; res.json(out);
 });
-const removeTrack = (t) => { for (const u of [t.url, t.cover]) if (u?.startsWith('/uploads/')) fs.rm(path.join(UPLOAD_DIR, path.basename(u)), () => {}); };
+const removeTrack = (t) => { for (const u of [t.url, t.cover]) { if (u?.startsWith('/uploads/')) fs.rm(path.join(UPLOAD_DIR, path.basename(u)), () => {}); else sbDelete(sbKey(u)); } };
 app.delete('/api/tracks/:id', auth, (req, res) => {
   const isAdmin = db.users.find((u) => u.id === req.user.id)?.role === 'admin';
   const i = db.tracks.findIndex((t) => t.id === req.params.id && (t.by === req.user.id || isAdmin));
@@ -127,7 +190,7 @@ app.get('/api/discover', async (req, res) => {
     res.json({ tracks: (r.results || []).map((t) => ({ id: 'jm' + t.id, title: t.name, artist: t.artist_name, album: t.album_name, genre: t.musicinfo?.tags?.genres?.[0] || 'Discover', cover: t.image, url: `/api/proxy?u=${encodeURIComponent(t.audio)}`, source: 'jamendo' })) });
   } catch { res.status(502).json({ error: 'Discover service unavailable' }); }
 });
-const ALLOW = ['soundhelix.com', 'jamendo.com'];
+const ALLOW = ['soundhelix.com', 'jamendo.com', 'supabase.co'];
 app.get('/api/proxy', async (req, res) => {
   try {
     const u = new URL(req.query.u);
@@ -259,7 +322,40 @@ app.delete('/api/playlists/:id', auth, (req, res) => { db.playlists = db.playlis
 /* ============ admin ============ */
 app.get('/api/admin/stats', auth, admin, (_req, res) => {
   const totalPlays = db.tracks.reduce((s, t) => s + (t.plays || 0), 0);
-  res.json({ users: db.users.length, tracks: db.tracks.length, playlists: db.playlists.length, totalPlays, topTracks: [...db.tracks].sort((a, b) => (b.plays || 0) - (a.plays || 0)).slice(0, 8).map((t) => ({ id: t.id, title: t.title, plays: t.plays || 0 })), rooms: rooms.size });
+  res.json({ users: db.users.length, tracks: db.tracks.length, playlists: db.playlists.length, totalPlays, topTracks: [...db.tracks].sort((a, b) => (b.plays || 0) - (a.plays || 0)).slice(0, 8).map((t) => ({ id: t.id, title: t.title, plays: t.plays || 0 })), rooms: rooms.size, reports: (db.reports || []).filter((r) => r.status === 'open').length });
+});
+
+/* ============ AI (agent + RAG), reports, privacy, error handling ============ */
+registerAI(app, { db, auth, optAuth, findTrack, save, uid, stash });
+
+app.post('/api/report', rateLimit({ windowMs: 3600000, limit: 5, message: { error: 'Too many reports, try later' } }), (req, res) => {
+  const { trackId, name, email, details } = req.body || {};
+  if (!/^\S+@\S+\.\S+$/.test(email || '') || String(details || '').trim().length < 10) return res.status(400).json({ error: 'Valid email and details (10+ chars) required' });
+  db.reports = db.reports || [];
+  db.reports.unshift({ id: uid(), trackId: String(trackId || '').slice(0, 40), name: String(name || '').slice(0, 80), email: String(email).slice(0, 120), details: String(details).slice(0, 2000), ts: Date.now(), status: 'open' });
+  db.reports.length = Math.min(db.reports.length, 500); save(); res.json({ ok: true });
+});
+app.get('/api/admin/reports', auth, admin, (_q, res) => res.json((db.reports || []).filter((r) => r.status === 'open')));
+app.post('/api/admin/reports/:id/resolve', auth, admin, (req, res) => { const r = (db.reports || []).find((x) => x.id === req.params.id); if (r) { r.status = 'resolved'; save(); } res.json({ ok: true }); });
+
+app.get('/api/me/export', auth, (req, res) => {
+  const u = db.users.find((x) => x.id === req.user.id); if (!u) return res.status(404).json({ error: 'Not found' });
+  res.json({ profile: { id: u.id, name: u.name, email: u.email, role: u.role, created: u.created }, likes: (db.likes[u.id] || []).map(findTrack).filter(Boolean), playlists: db.playlists.filter((p) => p.userId === u.id).map(view), history: (db.history[u.id] || []).slice(0, 1000), uploads: db.tracks.filter((t) => t.by === u.id).map(({ lyrics, ...t }) => t) });
+});
+app.delete('/api/me', auth, (req, res) => {
+  const id = req.user.id, u = db.users.find((x) => x.id === id);
+  if (!u) return res.status(404).json({ error: 'Not found' });
+  if (u.role === 'admin') return res.status(400).json({ error: 'Admin accounts cannot be self-deleted' });
+  db.tracks.filter((t) => t.by === id).forEach(removeTrack); db.tracks = db.tracks.filter((t) => t.by !== id);
+  db.playlists = db.playlists.filter((p) => p.userId !== id); delete db.likes[id]; delete db.history[id]; db.users = db.users.filter((x) => x.id !== id);
+  save(); res.json({ ok: true });
+});
+
+app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
+app.use((err, _req, res, _next) => {
+  if (err?.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'File too large (max 30MB)' });
+  if (err?.type === 'entity.parse.failed') return res.status(400).json({ error: 'Bad JSON' });
+  console.error('[error]', err?.message); res.status(500).json({ error: 'Server error' });
 });
 
 /* ============ Listen Together: WebSocket rooms (host-driven sync + chat) ============ */
@@ -300,4 +396,4 @@ wss.on('connection', (ws) => {
 setInterval(() => wss.clients.forEach((ws) => { if (!ws.alive) return ws.terminate(); ws.alive = false; ws.ping(); }), 30000);
 
 server.listen(PORT, () => console.log(`Dhoom API v2 on :${PORT}`));
-for (const s of ['SIGTERM', 'SIGINT']) process.on(s, () => { flush(); process.exit(0); });
+for (const s of ['SIGTERM', 'SIGINT']) process.on(s, () => { flush().finally(() => process.exit(0)); });

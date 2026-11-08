@@ -1,4 +1,4 @@
-# 🥁 Dhoom v2 — Futuristic Music Streaming Platform
+# 🥁 Dhoom v3 — AI-powered Music Streaming Platform
 
 React + Vite PWA · Node/Express API · WebSockets · Web Audio · optional Groq LLM
 
@@ -11,6 +11,7 @@ React + Vite PWA · Node/Express API · WebSockets · Web Audio · optional Groq
 **Creator tools** — upload audio + cover art + .lrc, genres incl. Telugu Folk DJ / Mass Beats / Bhakti.
 **Admin** — first registered user is admin: platform stats, live rooms, track moderation.
 **UX** — Telugu/English UI, 3 themes + accent colors, command palette (Ctrl/⌘+K), keyboard shortcuts, responsive/mobile, installable offline-shell PWA.
+**v3 additions** — sticky header (search, voice, language, API status), footer + legal pages (About/Privacy/Terms/DMCA/Security & Limits), hero + skeleton loaders, API-down diagnostics banner, **Agentic AI assistant** (tool-calling), **RAG knowledge Q&A** (BM25 + citations), **CNN genre tagging service** (PyTorch, Docker), copyright report queue, data export/delete.
 **Engineering** — helmet security headers, rate limiting, input validation, CORS allowlist, SSRF-safe stream proxy, graceful shutdown, Docker + docker-compose, GitHub Actions CI.
 
 ## Run locally
@@ -23,3 +24,8 @@ After first start, **register yourself first → you become admin**.
 
 ## Music licensing (important)
 Seed tracks are placeholder demo audio. Commercial Telugu film/DJ songs are copyrighted: only upload music you own or have written permission for (independent folk artists, your own remixes, CC-licensed tracks). See `ROADMAP.md` for the licensed-catalog path.
+
+
+See `ARCHITECTURE.md`, `SECURITY.md`, `ROADMAP.md`, `ml/README.md`.
+
+**Persistence:** set `SUPABASE_*` env vars (see `SUPABASE.md`) so data and uploads survive redeploys.

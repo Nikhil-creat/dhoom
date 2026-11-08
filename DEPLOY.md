@@ -1,5 +1,8 @@
 # Deploy: GitHub → Render (API) → Vercel / Netlify (web)
 
+> **v3 update (git):** `cd ~/dhoom && git add . && git commit -m "v3" && git push` — Render and Vercel auto-redeploy.
+> **If the site loads but lists are empty:** check the red banner, then set Render `CLIENT_ORIGIN` = `https://dhoom-nikhill.vercel.app` (or `https://dhoom-*.vercel.app,https://dhoom-nikhill.vercel.app` to also allow previews). Optional v3 vars: `GROQ_API_KEY` (agent/RAG answers), `ML_SERVICE_URL` (CNN).
+
 **Order: API first** (frontend needs its URL).
 
 ## 1. GitHub (from Termux)
